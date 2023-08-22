@@ -1,0 +1,279 @@
+#!/bin/sh
+
+usage()
+{
+ 	printf "Usage: volume [client] [options]\n"
+	printf " Client:\n"
+	printf "  client\t\tThis can be either the ID or the case-sensitive name of the sink, or the below option\n"
+	printf "  --default,-D\t\tAutomatically determine the default sink and use it as the client\n"
+	printf " Options:\n"
+	printf "  --help,-h\t\tprint this usage and exit\n"
+	printf "  --list,-l\t\tLists all of the clients available to control\n"
+	printf "  --setdefault,-sd\tAssign the client to be the default sink\n"
+	printf "  --set,-s\t\tSets the volume percentage for a given client\n"
+	printf "  --get,-g\t\tGets the volume percentage for a given client\n"
+	printf "  --mute,-m\t\tSets the mute flag for a given client\n"
+	printf "  --unmute,-um\t\tUnsets the mute flag for a given client\n"
+	printf "  --togglemute,-tm\tToggles the mute flag for a given client\n"
+	printf "  --checkmute,-cm\tGets the status of the mute flag for a given client\n"
+	printf "  --setraw,-sr\t\tSets the raw volume number for a given client\n"
+	printf "  --getraw,-gr\t\tGets the raw volume number for a given client\n"
+	printf "  --increment,-i\tIncrements the volume for a given client by a given percentage\n"
+	printf "  --decrement,-d\tDecrements the volume for a given client by a given phercentage\n"
+}
+
+printlist()
+{
+	pacmd list-sinks | grep "index\|volume: front-left:\|muted\|device.description" | sed 's/,.*//g' | tr '\n' ' ' | sed 's/[[:space:]]*\([*]*\)[[:space:]]*index:[[:space:]]*\([[:digit:]]*\)[[:space:]]*volume:[[:space:]]*front-left:[[:space:]]*\([[:digit:]]*\)[[:space:]]*\/[[:space:]]*\([[:digit:]]*%\)[[:space:]]*\/[[:space:]]*[-]*[inf]*[[:digit:]]*[\.]*[[:digit:]]*[[:space:]]*dB[[:space:]]*muted:[[:space:]]*\([no]*[yes]*\)[[:space:]]*device.description[[:space:]]*=[[:space:]]*\(\"[^\"]*\"\)/\2 \3 \4 \5 n\1o \6\n/g; s/.$//g; s/\".*(/\"/g; s/)//g; s/n\*o/yes/g'
+}
+
+printindexlist()
+{
+	printlist | sed 's/\([[:digit:]]*\) [[:digit:]]* [[:digit:]]*% [no]*[yes]* [no]*[yes]* \"\([^\"]*\)\"/\1 \2/g'
+}
+
+getfullindex()
+{
+	printlist | sed 's/[^'"$1"'] [[:digit:]]* [[:digit:]]*% [no]*[yes]* [no]*[yes]* \"[^\"]*\"//g' | grep .
+}
+
+getindex()
+{
+	MATCH=
+	if [[ ! $1 =~ ^[0-9]+$ ]]
+	then
+		MATCH=$(printlist | sed 's/\([[:digit:]]* [[:digit:]]* [[:digit:]]*% [no]*[yes]* [no]*[yes]* \"'"$1"'\"\)/K\1/g; s/^[^K].*//g; s/^K//g' | grep .)
+	else
+		MATCH=$(getfullindex $1)
+	fi
+
+	echo $MATCH | sed 's/\([[:digit:]]*\) [[:digit:]]* [[:digit:]]*% [no]*[yes]* [no]*[yes]* \"[^\"]*\"/\1/g'
+}
+
+getvolume()
+{
+	if [ "$(checkmute $1)" == "yes" ]
+	then
+		printf "Muted"
+	else
+		getfullindex $1 | sed 's/[[:digit:]]* \([[:digit:]]*\) [[:digit:]]*% [no]*[yes]* [no]*[yes]* \"[^\"]*\"/\1/g'
+	fi
+}                                  
+
+getvolumepercent()
+{
+	if [ "$(checkmute $1)" == "yes" ]
+	then
+		printf "Muted"
+	else
+		getfullindex $1 | sed 's/[[:digit:]]* [[:digit:]]* \([[:digit:]]*%\) [no]*[yes]* [no]*[yes]* \"[^\"]*\"/\1/g'
+	fi
+}
+
+checkmute()
+{
+	getfullindex $1 | sed 's/[[:digit:]]* [[:digit:]]* [[:digit:]]*% \([no]*[yes]*\) [no]*[yes]* \"[^\"]*\"/\1/g'
+}
+
+getdefault()
+{
+	printlist | sed 's/[[:digit:]]* [[:digit:]]* [[:digit:]]*% [no]*[yes]* no \"[^\"]*\"//g' | grep .
+}
+
+getdefaultindex()
+{
+	getdefault | sed 's/\([[:digit:]]*\) [[:digit:]]* [[:digit:]]*% [no]*[yes]* yes \"[^\"]*\"/\1/g'
+}
+
+checkdefault()
+{
+	getfullindex $1 | sed 's/[[:digit:]]* [[:digit:]]* [[:digit:]]*% [no]*[yes]* \([no]*[yes]*\) \"[^\"]*\"/\1/g'
+}
+
+setdefault()
+{
+	if [[ "$(checkdefault $1)" == "no" ]]
+	then
+		pacmd set-default-sink $1
+	fi
+}
+
+dumpclientstatus()
+{
+	VOL=
+	if [ "$(checkmute $1)" == "yes" ]
+	then
+		VOL="Muted"
+	else
+		VOL=$(getvolumepercent $1)
+	fi
+
+	if [ "$(checkdefault $1)" == "yes" ]
+	then
+		echo $VOL > /tmp/_ns_default
+	fi
+
+	echo $VOL > /tmp/_ns_$1
+}
+
+setvolume()
+{
+	unmute $1
+	# Set to 0 first to avoid a bug
+	pacmd set-sink-volume $1 0
+	pacmd set-sink-volume $1 $2
+	dumpclientstatus $1
+}
+
+round()
+{
+	local df=${2:-0}
+	printf '%.*f' "$df" "$(bc -l <<< "a=$1; if(a>0) a+=5/10^($df+1) else if (a<0) a-=5/10^($df+1); scale=$df; a/1")"
+}
+
+setvolumepercent()
+{
+	setvolume $1 $(round "65536*(($2)/100)" 0)
+}
+
+incvolume()
+{
+	unmute $1
+	setvolume $1 $(round "65536*(($(getvolumepercent $1 | sed 's/%//g')+$2)/100)" 0)
+}
+
+decvolume()
+{
+	incvolume $1 -$2
+}
+
+setmute()
+{
+	pacmd set-sink-mute $1 $2
+}
+
+mute()
+{
+	setmute $1 1
+	dumpclientstatus $1
+}
+
+unmute()
+{
+	setmute $1 0
+	dumpclientstatus $1
+}
+
+togglemute()
+{
+	if [ "$(checkmute $1)" == "no" ]
+	then
+		mute $1
+	else
+		unmute $1
+	fi
+}
+
+if [ $# -eq 0 ]
+then
+	usage
+	exit 1
+fi
+
+CLIENT=
+case $1 in
+	--help|-h)
+		usage
+		exit 0
+		;;
+	--list|-l)
+		printindexlist
+		exit 0
+		;;
+	--default|-D)
+		CLIENT=$(getdefaultindex)
+		;;
+	*)
+		CLIENT=$(getindex "$1")
+		;;
+esac
+
+if [[ ! $CLIENT =~ ^[0-9]+$ ]]
+then
+	printf "Error: unknown client specified! Make sure the client exists. (e.g. volume -l)\n"
+	usage
+	exit 1
+fi
+
+shift
+while [[ $# -gt 0 ]]
+do
+	opt="$1"
+	case $opt in
+		--setdefault|-sd)
+			setdefault $CLIENT
+			;;
+		--set|-s)
+			if [[ ! $# -gt 1 ]]
+			then
+				printf "Error: expected percentage! (e.g. volume client -s 50)\n"
+				usage
+				exit 1
+			fi
+			setvolumepercent $CLIENT $2
+			;;
+		--get|-g)
+			getvolumepercent $CLIENT
+			;;
+		--mute|-m)
+			mute $CLIENT
+			;;
+		--unmute|-um)
+			unmute $CLIENT
+			;;
+		--togglemute|-tm)
+			togglemute $CLIENT
+			;;
+		--checkmute|-cm)
+			checkmute $CLIENT
+			;;
+		--setraw|-sr)
+			if [[ ! $# -gt 1 ]]
+			then
+				printf "Error: expected raw volume! (e.g. volume client -sr 65536)\n"
+				usage
+				exit 1
+			fi
+			setvolume $CLIENT $2
+			;;
+		--getraw|-gr)
+			getvolume $CLIENT
+			;;
+		--increment|-i)
+			if [[ ! $# -gt 1 ]]
+			then
+				printf "Error: expected percentage! (e.g. volume client -i 5)\n"
+				usage
+				exit 1
+			fi
+			incvolume $CLIENT $2
+			;;
+		--decrement|-d)
+			if [[ ! $# -gt 1 ]]
+			then
+				printf "Error: expected percentage! (e.g. volume client -d 5)\n"
+				usage
+				exit 1
+			fi
+			decvolume $CLIENT $2
+			;;
+		*)
+			printf "Error: unknown parameter!\n"
+			usage
+			exit 1
+			;;
+	esac
+	exit 0
+done
+
+printf "Warning: No options specified!\n"
