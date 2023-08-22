@@ -1,6 +1,10 @@
 # pulse-cli-volume
 A simple bash script to control the volume of pulse audio sinks
 
+# Dependencies
+
+This requies pulseaudio, bash, and the pacmd command
+
 # Usage
 ```
 Usage: volume [client] [options]
